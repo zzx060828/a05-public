@@ -1,46 +1,159 @@
-# AI_interview
+# AI 智能面试与能力提升平台
 
-This template should help get you started developing with Vue 3 in Vite.
+面向求职者与招聘团队的智能面试项目，结合大语言模型、知识库检索、语音交互和多模态分析，将面试练习、能力评估、报告复盘与针对性学习组织到同一套产品流程中。
 
-## Recommended IDE Setup
+个人端围绕「练习—评估—复盘—提升」展开，帮助用户准备技术面试、梳理表达思路并积累练习记录；企业端围绕岗位与候选人展开，为面试组织、过程查看和报告评审提供工作空间。
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+## 项目功能
 
-## Recommended Browser Setup
+### 个人端：模拟面试与持续学习
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+| 功能 | 说明 |
+| --- | --- |
+| 岗位化面试 | 围绕 Java 后端、Python / AI、Web 前端等岗位组织技术题与行为题，提供简历和岗位要求输入入口。 |
+| 教练与考试模式 | 教练模式侧重提示、反馈和练习；考试模式侧重连续问答与面试结束后的集中复盘。 |
+| 多轮对话 | 根据回答内容组织追问、提示和题目切换，围绕知识理解与表达过程展开交流。 |
+| 语音与数字人交互 | 结合录音、语音识别、语音合成及数字人 SDK，提供可听、可说的面试交互界面。 |
+| 面试报告 | 通过问答明细、文字分析和可视化图表呈现面试表现，帮助用户回顾回答与改进方向。 |
+| 题库与学习资源 | 按岗位和知识点浏览题目，结合知识检索获取相关学习材料。 |
+| 练习记录与学习路径 | 汇集历史面试、报告与学习建议，便于持续复盘和安排下一阶段练习。 |
 
-## Customize configuration
+### 企业端：面试组织与候选人评审
 
-See [Vite Configuration Reference](https://vite.dev/config/).
+| 功能 | 说明 |
+| --- | --- |
+| 企业工作台 | 集中呈现面试组织与候选人相关信息，提供常用管理入口。 |
+| 岗位与面试场次 | 围绕岗位要求组织面试，设置岗位信息、面试难度及参与安排。 |
+| 面试邀请 | 通过面试链接和邀请标识衔接岗位与候选人的面试流程。 |
+| 候选人管理 | 按岗位查看候选人列表、面试状态及相关评估信息。 |
+| 报告评审 | 查看候选人的面试报告与问答表现，为招聘团队的人工评审提供参考。 |
+| 题库管理 | 导入岗位题目，结合语义相似度检索与重排序进行题目查重。 |
 
-## Project Setup
+## 典型使用流程
 
-```sh
-npm install
+**个人练习**
+
+选择目标岗位与面试模式 → 填写面试背景 → 进入 AI 多轮问答 → 查看面试报告 → 结合学习资源继续练习。
+
+**企业面试**
+
+设置岗位与面试场次 → 发出面试邀请 → 候选人参与面试 → 汇集面试记录与报告 → 招聘团队进行评审。
+
+## AI 能力与实现思路
+
+- **知识库增强问答**：使用 ChromaDB 管理技术题、行为题和学习资源，通过向量检索与模型重排序为提问、反馈和资源推荐提供上下文。
+- **动态面试编排**：结合岗位方向、当前回答和对话历史组织追问与题目切换，并以结构化结果记录每轮反馈。
+- **语音交互**：使用 Faster-Whisper 进行语音转写，结合 Edge TTS 生成面试官语音，使用 FFmpeg 处理音频格式。
+- **多模态分析**：综合回答文本、语音特征和视频截图，组织内容表达、语音表现与非语言表现的分析信息。
+- **文本与音频融合**：基于中文 RoBERTa 与 WavLM 构建特征提取、注意力融合和门控分类模块，配套数据加载、训练及推理代码。
+- **报告与学习建议**：围绕回答准确性、知识深度、逻辑表达、沟通表现等维度组织反馈，并关联知识点与学习材料。
+
+## 技术架构
+
+项目采用前端、业务服务与 AI 服务分层的结构：前端承担页面展示与音视频交互，业务服务管理用户及面试记录，AI 服务负责问答编排、知识检索与模型分析。
+
+| 层次 | 主要技术 | 职责 |
+| --- | --- | --- |
+| Web 前端 | Vue 3、Vite、Vue Router、Pinia、Element Plus | 页面交互、状态管理、面试流程与管理界面 |
+| 可视化与媒体 | ECharts、浏览器媒体 API、数字人 SDK | 报告图表、录音与截图、数字人呈现 |
+| 业务服务 | FastAPI、SQLAlchemy、SQLite、JWT | 身份认证、题库、面试会话与历史报告 |
+| AI 服务 | Python、智谱模型接口、ChromaDB | 多轮问答、检索增强、报告与学习建议生成 |
+| 本地模型 | PyTorch、Transformers、Faster-Whisper | 文本与音频建模、情绪分类、语音识别 |
+| 音频处理 | FFmpeg、Librosa、Edge TTS | 格式转换、声学特征处理与语音合成 |
+
+## 代码导航
+
+```text
+.
+├── src/                         # Web 前端
+│   ├── api/                     # 业务接口调用
+│   ├── views/                   # 面试、题库、报告、学习与个人页面
+│   ├── components/              # 页面组件
+│   ├── router/                  # 前端路由
+│   ├── stores/                  # 状态管理
+│   └── libs/avatar-sdk/         # 数字人 SDK
+├── backend/                     # 业务后端
+│   ├── main.py                  # 服务入口
+│   └── app/
+│       ├── api/                 # HTTP 接口
+│       ├── core/                # 配置、数据库与数据初始化
+│       └── services/            # 面试、音频和语义查重服务
+├── ai_module/                   # AI 服务与模型代码
+│   ├── main.py                  # AI 服务入口
+│   ├── interviewer.py           # 面试编排、检索与反馈
+│   ├── audio_analysis.py        # 音频分析与融合模型推理
+│   ├── fusion_model.py          # 文本与音频融合网络
+│   ├── train.py                 # 模型训练
+│   ├── dataset_loader.py        # 训练数据加载
+│   ├── init_db.py               # 技术题与行为题向量库初始化
+│   └── init_ls.py               # 学习资源向量库初始化
+├── Toscrape/                    # 题目采集与数据整理脚本
+├── STT/                         # 语音识别相关辅助脚本
+├── TTS/                         # 语音合成相关辅助脚本
+├── public/                      # 前端公共资源
+└── .env.example                 # 环境变量示例
 ```
 
-### Compile and Hot-Reload for Development
+## 本地开发
 
-```sh
+以下命令从当前仓库根目录开始执行，分别在独立终端中启动各项服务。
+
+### 环境准备
+
+- Node.js `20.19+`（20.x）或 `22.12+`，以及 npm。
+- Python 环境与对应模块依赖：FastAPI、Uvicorn、SQLAlchemy、ChromaDB、智谱 SDK、PyTorch、Transformers、Faster-Whisper 等。
+- FFmpeg，以及启用本地模型时所需的预训练模型和推理权重。
+- 麦克风；使用视频交互时准备摄像头。浏览器媒体访问使用 `localhost` 或 HTTPS。
+
+参考 [`.env.example`](.env.example) 配置本地环境。前端在根目录 `.env` 中读取 `VITE_` 开头的配置；Python 服务使用启动进程的环境变量。
+
+| 配置项 | 用途 |
+| --- | --- |
+| `VITE_API_BASE_URL` | 前端访问的业务服务地址，本地通常为 `http://127.0.0.1:8001` |
+| `VITE_AVATAR_API_KEY` | 数字人应用配置 |
+| `ZHIPUAI_API_KEY` | 模型调用与知识库向量生成 |
+| `JWT_SECRET_KEY` | 业务服务的身份令牌签名配置 |
+
+服务端密钥通过运行环境配置；浏览器端的 `VITE_` 配置用于可公开的前端参数。使用数字人鉴权时，按服务商接入方式配置域名限制与临时凭证。
+
+### 启动前端
+
+```bash
+npm ci
 npm run dev
 ```
 
-### Compile and Minify for Production
+### 启动 AI 服务
 
-```sh
+准备好模型、推理权重及向量知识库后，启动 AI 服务：
+
+```bash
+cd ai_module
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+题库数据见 `all.json` 与 `behavior_questions.json`，学习资源见 `learning_resources.json`。`init_db.py` 用于重建题目向量集合，`init_ls.py` 用于导入学习资源；这些脚本通过模型接口生成向量。
+
+本地情绪分析使用的训练权重文件名为 `ai_interviewer_brain_v3_e2e.pth`，放置在 `ai_module/` 下；模型结构与训练入口分别见 `fusion_model.py` 和 `train.py`。
+
+### 启动业务服务
+
+```bash
+cd backend
+python main.py
+```
+
+| 服务 | 默认地址 |
+| --- | --- |
+| Web 前端 | `http://localhost:5173`，以 Vite 启动输出为准 |
+| 业务服务 API 文档 | `http://127.0.0.1:8001/docs` |
+| AI 服务 API 文档 | `http://127.0.0.1:8000/docs` |
+
+### 前端构建
+
+```bash
 npm run build
+npm run preview
 ```
 
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-npm run lint
-```
-
-# a05
+构建产物输出到 `dist/`，可用于静态页面部署；业务服务与 AI 服务独立运行。
