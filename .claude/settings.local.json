@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat -ano)",
+      "Bash(findstr :8000)",
+      "Bash(tasklist *)",
+      "Bash(taskkill *)",
+      "Bash(powershell *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(node -e \"console.log\\(require\\('C:/Users/ASUS/Desktop/a05-Test/a05-Test/node_modules/echarts/package.json'\\).version\\)\")",
+      "Bash(pip show *)",
+      "Bash(pip install *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(sqlite3 *)",
+      "mcp__ide__executeCode",
+      "Bash(npx vite *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5174/)"
+    ]
+  }
+}

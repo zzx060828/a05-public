@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sqlite3; conn = sqlite3.connect\\('backend/interview_business.db'\\); cursor = conn.cursor\\(\\); cursor.execute\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table'\\\\\"\\); print\\([t[0] for t in cursor.fetchall\\(\\)]\\)\")",
+      "Bash(python -c \"import sqlite3; conn = sqlite3.connect\\('backend/interview_business.db'\\); cursor = conn.cursor\\(\\); cursor.execute\\('PRAGMA table_info\\(interview_reports\\)'\\); print\\([c[1] for c in cursor.fetchall\\(\\)]\\); cursor.execute\\('SELECT COUNT\\(*\\) FROM interview_reports'\\); print\\(f'report count: {cursor.fetchone\\(\\)[0]}'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(curl *)",
+      "Bash(python main.py)",
+      "Bash(netstat -ano)"
+    ]
+  }
+}
