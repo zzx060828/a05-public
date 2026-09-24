@@ -67,6 +67,64 @@ export const submitTextAnswer = async (data, config = {}) => {
   }
 };
 
+const focusEventStorageKey = (sessionId) => `interview_focus_pending_${sessionId}`;
+const focusFlushes = new Map();
+
+const readPendingFocusEvents = (sessionId) => {
+  try {
+    const events = JSON.parse(sessionStorage.getItem(focusEventStorageKey(sessionId)) || '[]');
+    return Array.isArray(events) ? events : [];
+  } catch {
+    return [];
+  }
+};
+
+export const getFocusEvents = async (sessionId) => {
+  const response = await apiClient.get('/api/focus_events', {
+    params: { session_id: sessionId },
+    timeout: 5000
+  });
+  return response.data;
+};
+
+export const flushFocusEvents = (sessionId) => {
+  if (!sessionId) return Promise.resolve(null);
+  if (focusFlushes.has(sessionId)) return focusFlushes.get(sessionId);
+
+  const flush = (async () => {
+    let serverCount = null;
+    while (true) {
+      const pending = readPendingFocusEvents(sessionId);
+      if (pending.length === 0) return serverCount;
+      try {
+        const response = await apiClient.post('/api/focus_events', {
+          session_id: sessionId,
+          ...pending[0]
+        }, { timeout: 5000 });
+        serverCount = response.data.leave_count;
+        // 读取最新队列，避免上报期间新产生的离屏事件被旧数组覆盖。
+        const latest = readPendingFocusEvents(sessionId);
+        sessionStorage.setItem(
+          focusEventStorageKey(sessionId),
+          JSON.stringify(latest.filter(event => event.event_id !== pending[0].event_id))
+        );
+      } catch (error) {
+        console.warn('离屏事件尚未同步，将在刷新或获取报告前重试:', error);
+        return serverCount;
+      }
+    }
+  })().finally(() => focusFlushes.delete(sessionId));
+  focusFlushes.set(sessionId, flush);
+  return flush;
+};
+
+export const queueFocusEvent = (sessionId, event) => {
+  const pending = readPendingFocusEvents(sessionId);
+  pending.push(event);
+  sessionStorage.setItem(focusEventStorageKey(sessionId), JSON.stringify(pending));
+  return flushFocusEvents(sessionId);
+};
+
 
 // ==========================================
 // 3. 报告与历史记录接口
@@ -75,6 +133,7 @@ export const submitTextAnswer = async (data, config = {}) => {
 // 获取全量专属报告 (支持雷达图、音视频进度条等所有模块)
 export const getStreamingReport = async (sessionId, onChunk, onDone) => {
   try {
+    await flushFocusEvents(sessionId);
     const token = sessionStorage.getItem('candidate_token') || '';
     console.log("🚀 开始获取报告数据，ID:", sessionId);
     const response = await apiClient.post('/api/report', { session_id: sessionId, token });

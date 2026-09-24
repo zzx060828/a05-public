@@ -2,7 +2,8 @@ import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref } fr
 import { onBeforeRouteLeave, type RouteLocationNormalizedLoaded } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import XFVirtualHuman, { SDKEvents } from '@/libs/avatar-sdk/esm/index.js'
-import { fetchAudioBlob, getAvatarConnection, submitAnswer, submitTextAnswer, uploadScreenshot } from '@/api/interview'
+import { fetchAudioBlob, getAvatarConnection, getFocusEvents, queueFocusEvent, flushFocusEvents, submitAnswer, submitTextAnswer, uploadScreenshot } from '@/api/interview'
+import { avatarMetricsEnabled, recordAvatarConnectMetric } from '@/utils/avatarConnectMetrics'
 
 export type InterviewPhase =
   | 'idle'
@@ -19,6 +20,23 @@ type Emit = (event: 'interview-end') => void
 
 const FRAME_BYTES = 1280 // 16 kHz * 16 bit * 40 ms
 const AUDIO_FRAME = { start: 0, intermediate: 1, end: 2 } as const
+const RECORDING_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/mp4;codecs=mp4a.40.2',
+  'audio/webm',
+  'audio/mp4',
+  'audio/ogg;codecs=opus',
+  'audio/ogg'
+]
+
+function recordingFileName(mimeType: string): string {
+  const container = mimeType.split(';', 1)[0].trim().toLowerCase()
+  const extension = container === 'audio/webm' || container === 'video/webm' ? 'webm'
+    : container === 'audio/mp4' || container === 'video/mp4' ? 'mp4'
+      : container === 'audio/ogg' ? 'ogg'
+        : 'bin'
+  return `record.${extension}`
+}
 
 export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: Emit) {
   const phase = ref<InterviewPhase>('idle')
@@ -100,6 +118,8 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
   let isRequestingMedia = false
   let pcmQueue = new Uint8Array(0)
   let pcmFrameOpen = false
+  let writeInFlight = false
+  let audioWriteGeneration = 0
   let playbackFallbackTimer: number | null = null
   let playbackResolve: (() => void) | null = null
   let currentSubmitPromise: Promise<void> | null = null
@@ -113,6 +133,7 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
 
   const sessionKey = () => `interview_bootstrap_${currentSessionId.value}`
   const deadlineKey = () => `interview_deadline_${currentSessionId.value}`
+  const focusCountKey = () => `interview_focus_count_${currentSessionId.value}`
   const createTurnId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`
 
   function persistSessionState(audioUrl = '') {
@@ -209,6 +230,8 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
     completePlayback()
     pcmQueue = new Uint8Array(0)
     pcmFrameOpen = false
+    audioWriteGeneration += 1
+    writeInFlight = false
     if (human) {
       try { human.removeAllListeners?.() } catch {}
       try { human.destroy?.() } catch {}
@@ -217,67 +240,96 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
     if (humanContainer.value) humanContainer.value.innerHTML = ''
   }
 
-  async function initDigitalHuman() {
-    if (!humanContainer.value || isDestroyed) throw new Error('数字人容器尚未就绪')
-    if (typeof RTCPeerConnection === 'undefined') throw new Error('当前浏览器不支持 WebRTC，已降级为文字面试')
+  async function initDigitalHuman(source: 'initial' | 'reconnect' = 'initial') {
+    const measuring = source === 'initial' && avatarMetricsEnabled()
+    const startedAt = performance.now()
+    let attempts = 0
+    let outcome: 'success' | 'failure' | 'aborted' = 'failure'
+    let outcomeError: unknown
 
-    let finalError: unknown
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      if (isDestroyed) throw new Error('页面已经离开')
-      destroyHumanInstance()
-      let instance: any = null
+    try {
+      if (!humanContainer.value || isDestroyed) throw new Error('数字人容器尚未就绪')
+      if (typeof RTCPeerConnection === 'undefined') throw new Error('当前浏览器不支持 WebRTC，已降级为文字面试')
 
-      try {
-        // 获取签名、创建实例和启动 SDK 都属于同一个 Attempt，任一步骤失败都走统一重试判断。
-        const connection = await getAvatarConnection()
-        if (!connection?.app_id || !connection?.signed_url) {
-          const credentialError = new Error('未获取到数字人连接凭证')
-          credentialError.name = 'AvatarCredentialError'
-          throw credentialError
+      let finalError: unknown
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        attempts = attempt
+        if (isDestroyed) throw new Error('页面已经离开')
+        destroyHumanInstance()
+        let instance: any = null
+
+        try {
+          // 获取签名、创建实例和启动 SDK 都属于同一个 Attempt，任一步骤失败都走统一重试判断。
+          const connection = await getAvatarConnection()
+          if (!connection?.app_id || !connection?.signed_url) {
+            const credentialError = new Error('未获取到数字人连接凭证')
+            credentialError.name = 'AvatarCredentialError'
+            throw credentialError
+          }
+
+          instance = new XFVirtualHuman({ useInlinePlayer: true })
+          human = instance
+          instance.setApiInfo({ appId: connection.app_id, signedUrl: connection.signed_url })
+          instance.setGlobalParams({
+            stream: { protocol: 'webrtc' },
+            avatar: { avatar_id: 'cnr5dg8n2000000003', width: 1280, height: 720 },
+            transparent: true,
+            background: { type: 'none' },
+            tts: { vcn: 'x4_mingge' }
+          })
+
+          await withTimeout(instance.start({ wrapper: humanContainer.value }), 15_000)
+          if (instance !== human || isDestroyed) throw new Error('数字人实例已经失效')
+          // 建连成功后再监听运行期断连，避免启动失败时 disconnected 与外层重试并发重建。
+          instance.on(SDKEvents.frame_stop, completePlayback)
+          instance.on(SDKEvents.disconnected, () => triggerReconnect())
+          isHumanActive.value = true
+          startAudioFeeder()
+          outcome = 'success'
+          return
+        } catch (error: any) {
+          finalError = error
+          if (instance === human) {
+            destroyHumanInstance()
+          } else if (instance) {
+            try { instance.removeAllListeners?.() } catch {}
+            try { instance.destroy?.() } catch {}
+          }
+
+          if (attempt >= 3) break
+          const retryDelay = getAvatarRetryDelay(error, attempt)
+          if (retryDelay === null) break
+          await delay(retryDelay)
         }
-
-        instance = new XFVirtualHuman({ useInlinePlayer: true })
-        human = instance
-        instance.setApiInfo({ appId: connection.app_id, signedUrl: connection.signed_url })
-        instance.setGlobalParams({
-          stream: { protocol: 'webrtc' },
-          avatar: { avatar_id: 'cnr5dg8n2000000003', width: 1280, height: 720 },
-          transparent: true,
-          background: { type: 'none' },
-          tts: { vcn: 'x4_mingge' }
+      }
+      throw finalError instanceof Error ? finalError : new Error('数字人初始化失败')
+    } catch (error) {
+      outcomeError = error
+      if (isDestroyed) outcome = 'aborted'
+      throw error
+    } finally {
+      if (measuring) {
+        recordAvatarConnectMetric({
+          runId: globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          finishedAt: new Date().toISOString(),
+          outcome,
+          attempts,
+          firstSuccess: outcome === 'success' && attempts === 1,
+          finalSuccess: outcome === 'success',
+          durationMs: Math.round(performance.now() - startedAt),
+          errorName: outcomeError instanceof Error ? outcomeError.name : ''
         })
-
-        await withTimeout(instance.start({ wrapper: humanContainer.value }), 15_000)
-        if (instance !== human || isDestroyed) throw new Error('数字人实例已经失效')
-        // 建连成功后再监听运行期断连，避免启动失败时 disconnected 与外层重试并发重建。
-        instance.on(SDKEvents.frame_stop, completePlayback)
-        instance.on(SDKEvents.disconnected, () => triggerReconnect())
-        isHumanActive.value = true
-        startAudioFeeder()
-        return
-      } catch (error: any) {
-        finalError = error
-        if (instance === human) {
-          destroyHumanInstance()
-        } else if (instance) {
-          try { instance.removeAllListeners?.() } catch {}
-          try { instance.destroy?.() } catch {}
-        }
-
-        if (attempt >= 3) break
-        const retryDelay = getAvatarRetryDelay(error, attempt)
-        if (retryDelay === null) break
-        await delay(retryDelay)
       }
     }
-    throw finalError instanceof Error ? finalError : new Error('数字人初始化失败')
   }
 
   function startAudioFeeder() {
     if (heartbeatTimer) window.clearInterval(heartbeatTimer)
-    heartbeatTimer = window.setInterval(() => {
-      if (!human || isDestroyed || isReconnecting || document.hidden || pcmQueue.length === 0) return
+    heartbeatTimer = window.setInterval(async () => {
+      if (!human || isDestroyed || isReconnecting || document.hidden || pcmQueue.length === 0 || writeInFlight) return
 
+      const currentHuman = human
+      const generation = audioWriteGeneration
       const isLast = pcmQueue.length <= FRAME_BYTES
       const chunk = new Uint8Array(FRAME_BYTES)
       chunk.set(pcmQueue.slice(0, FRAME_BYTES))
@@ -288,11 +340,18 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
       pcmFrameOpen = !isLast
       const buffer = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength)
 
-      Promise.resolve(human.writeAudio(buffer, frameStatus)).catch((error: unknown) => {
-        if (String(error).includes('InvalidConnect')) triggerReconnect()
-      })
+      writeInFlight = true
+      try {
+        await currentHuman.writeAudio(buffer, frameStatus)
+      } catch (error) {
+        if (currentHuman === human && generation === audioWriteGeneration && String(error).includes('InvalidConnect')) {
+          void triggerReconnect()
+        }
+      } finally {
+        if (generation === audioWriteGeneration) writeInFlight = false
+      }
     }, 40)
-  } 
+  }
 
   async function triggerReconnect() {
     if (isReconnecting || isDestroyed || isInterviewFinished.value) return
@@ -303,7 +362,7 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
     pcmFrameOpen = false
     completePlayback()
     try {
-      await initDigitalHuman()
+      await initDigitalHuman('reconnect')
       ElMessage.success('面试官连接已恢复')
     } catch {
       isHumanActive.value = false
@@ -443,7 +502,8 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
       analyser.fftSize = 256
       audioContext.createMediaStreamSource(recordingStream).connect(analyser)
 
-      const recorder = new MediaRecorder(recordingStream)
+      const mimeType = RECORDING_MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type))
+      const recorder = new MediaRecorder(recordingStream, mimeType ? { mimeType } : undefined)
       mediaRecorder.value = recorder
       audioChunks.value = []
       recorder.ondataavailable = event => {
@@ -454,7 +514,7 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
         ElMessage.error('录音失败，请重新录制或使用文字回答')
       }
       recorder.onstop = async () => {
-        const blob = new Blob(audioChunks.value, { type: recorder.mimeType || 'audio/webm' })
+        const blob = new Blob(audioChunks.value, { type: recorder.mimeType || audioChunks.value[0]?.type || '' })
         recordingStream?.getTracks().forEach(track => track.stop())
         recordingStream = null
         mediaRecorder.value = null
@@ -582,7 +642,7 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
         const formData = new FormData()
         formData.append('session_id', currentSessionId.value)
         formData.append('client_turn_id', pendingAudioTurnId)
-        formData.append('audio_file', blob, 'record.webm')
+        formData.append('audio_file', blob, recordingFileName(blob.type))
         const response = await submitAnswer(formData)
         await processNextTurn(response)
         pendingAudioBlob.value = null
@@ -662,6 +722,7 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
     heartbeatTimer = null
     stopCamera()
     sessionStorage.removeItem(deadlineKey())
+    await flushFocusEvents(currentSessionId.value)
     isInterviewFinished.value = true
     phase.value = 'finished'
     emit('interview-end')
@@ -711,15 +772,26 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
     }
   }
 
-  function processLeaveEvent(reason: string) {
+  function processLeaveEvent(reason: 'hidden' | 'blur') {
     const activePhases: InterviewPhase[] = ['speaking', 'ready', 'recording', 'submitting']
     if (isDestroyed || isRequestingMedia || showWarningModal.value || !activePhases.includes(phase.value)) return
     const now = Date.now()
     if (now - lastLeaveAt < 800) return
     lastLeaveAt = now
     leaveCount.value += 1
-    warningReason.value = reason
+    sessionStorage.setItem(focusCountKey(), String(leaveCount.value))
+    warningReason.value = reason === 'hidden' ? '切换标签页或最小化浏览器' : '离开面试窗口焦点'
     showWarningModal.value = true
+    void queueFocusEvent(currentSessionId.value, {
+      event_id: createTurnId(),
+      reason,
+      occurred_at: new Date(now).toISOString()
+    }).then(serverCount => {
+      if (typeof serverCount === 'number') {
+        leaveCount.value = Math.max(leaveCount.value, serverCount)
+        sessionStorage.setItem(focusCountKey(), String(leaveCount.value))
+      }
+    })
     if (mediaRecorder.value?.state === 'recording') {
       phaseBeforePause.value = phase.value
       mediaRecorder.value.pause()
@@ -734,11 +806,11 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
   }
 
   const handleVisibilityChange = () => {
-    if (document.hidden) processLeaveEvent('切换标签页或最小化浏览器')
+    if (document.hidden) processLeaveEvent('hidden')
     else syncCountdown()
   }
   const handleWindowBlur = () => window.setTimeout(() => {
-    if (!document.hasFocus()) processLeaveEvent('离开面试窗口焦点')
+    if (!document.hasFocus()) processLeaveEvent('blur')
   }, 200)
   const handleOffline = () => {
     networkOffline.value = true
@@ -747,6 +819,12 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
   const handleOnline = () => {
     networkOffline.value = false
     ElMessage.success('网络已恢复')
+    void flushFocusEvents(currentSessionId.value).then(serverCount => {
+      if (typeof serverCount === 'number') {
+        leaveCount.value = Math.max(leaveCount.value, serverCount)
+        sessionStorage.setItem(focusCountKey(), String(leaveCount.value))
+      }
+    })
   }
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
     if (isInterviewFinished.value || phase.value === 'idle' || phase.value === 'error') return
@@ -779,6 +857,13 @@ export function useInterviewSession(route: RouteLocationNormalizedLoaded, emit: 
   onMounted(() => {
     isDestroyed = false
     currentSessionId.value = String(route.params.sessionId || '')
+    const savedFocusCount = Number(sessionStorage.getItem(focusCountKey()) || 0)
+    leaveCount.value = Number.isSafeInteger(savedFocusCount) && savedFocusCount >= 0 ? savedFocusCount : 0
+    void getFocusEvents(currentSessionId.value).then(summary => {
+      leaveCount.value = Math.max(leaveCount.value, summary.leave_count || 0)
+      sessionStorage.setItem(focusCountKey(), String(leaveCount.value))
+    }).catch(() => {})
+    void flushFocusEvents(currentSessionId.value)
     restoreSessionState()
     try {
       const savedDifficulty = JSON.parse(sessionStorage.getItem('interview_difficulty') || 'null')

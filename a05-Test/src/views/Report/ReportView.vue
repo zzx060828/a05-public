@@ -57,6 +57,16 @@
             :advantages="reportData.advantages"
             :disadvantages="reportData.disadvantages"
           />
+          <section v-if="reportData.focusMonitoring" class="focus-monitoring">
+            <h3>面试界面离开记录：{{ reportData.focusMonitoring.leave_count }} 次</h3>
+            <p>时间由浏览器记录；事件来自页面可见性和窗口焦点变化，仅供复核，不单独作为作弊判定。</p>
+            <ul v-if="reportData.focusMonitoring.events?.length">
+              <li v-for="(event, index) in reportData.focusMonitoring.events" :key="index">
+                {{ new Date(event.occurred_at).toLocaleString() }} ·
+                {{ event.reason === 'hidden' ? '切换标签页或最小化浏览器' : '离开面试窗口焦点' }}
+              </li>
+            </ul>
+          </section>
         </div>
 
         <div id="content" class="section-wrapper" :ref="setSectionRef">
@@ -153,7 +163,8 @@ const reportData = ref({
   plans: [],       
   changeX: [], 
   changeY: [],
-  reportMarkdown: '' 
+  reportMarkdown: '',
+  focusMonitoring: null
 })
 
 const fetchReportData = async () => {
@@ -212,6 +223,7 @@ const fetchReportData = async () => {
 
   const md = finalData.report_markdown || "";
   if (md) reportData.value.reportMarkdown = md;
+  reportData.value.focusMonitoring = finalData.focus_monitoring || null;
 
   // 雷达图数据处理
   if (finalData.radar_packet && finalData.radar_packet.data && finalData.radar_packet.data.length > 0) {
@@ -724,5 +736,18 @@ onUnmounted(() => {
   justify-content: center;
   z-index: 99999; /* 确保盖住所有东西 */
 }
-</style>
 
+.focus-monitoring {
+  margin-top: 18px;
+  padding: 18px 22px;
+  border: 1px solid #d8e5eb;
+  border-radius: 12px;
+  background: #fff;
+  color: #334155;
+}
+
+.focus-monitoring h3 { margin: 0 0 8px; font-size: 18px; }
+.focus-monitoring p { margin: 0; color: #64748b; font-size: 13px; }
+.focus-monitoring ul { margin: 12px 0 0; padding-left: 20px; }
+.focus-monitoring li { margin-top: 6px; font-size: 14px; }
+</style>

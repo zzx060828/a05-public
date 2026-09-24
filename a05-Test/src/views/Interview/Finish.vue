@@ -13,6 +13,7 @@ const score = ref(0)
 const answeredCount = ref(0)
 const totalCount = ref(10)
 const timeSpentSeconds = ref(0)
+const focusCount = ref(0)
 const analysisSummaryList = ref(['正在加载大模型多维度面评数据...'])
 const isLoading = ref(true)
 
@@ -85,10 +86,12 @@ const fetchRealReport = async () => {
     }
 
     loadCachedSummary()
+    focusCount.value = Number(sessionStorage.getItem(`interview_focus_count_${sessionId}`) || 0) || 0
 
     const report = await getStreamingReport(sessionId)
 
     if (report.status === 'success') {
+      focusCount.value = report.focus_monitoring?.leave_count ?? focusCount.value
       // 真实评分：优先用雷达多维度的平均分
       const realScore = report.average_score
         || report.summary_packet?.averageScore
@@ -242,6 +245,10 @@ onMounted(() => {
                     <svg v-else viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
                     {{ completeStatus }}
                   </div>
+                </div>
+                <div class="metric-box soft-panel fade-in">
+                  <div class="metric-label">离开面试界面记录</div>
+                  <div class="metric-value">{{ focusCount }} 次</div>
                 </div>
               </div>
 
@@ -403,4 +410,3 @@ onMounted(() => {
 .fade-in { animation: fadeIn 0.5s ease-out forwards; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 </style>
-

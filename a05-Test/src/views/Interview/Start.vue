@@ -232,7 +232,7 @@ const {
           检测到您刚才 <strong>{{ warningReason }}</strong>！<br/>
           这是第 <span class="highlight">{{ leaveCount }}</span> 次离开面试界面。
         </p>
-        <p class="warning-sub">为了保证面试公平性，请全程保持页面专注，切屏记录将被同步至面试报告中。</p>
+        <p class="warning-sub">为了保证面试公平性，请全程保持页面专注，离屏记录将在网络可用时同步至面试报告中。</p>
         <button class="warning-btn" @click="closeWarningModal">我知道了，回到面试</button>
       </div>
     </div>

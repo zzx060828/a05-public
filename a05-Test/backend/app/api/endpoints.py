@@ -14,10 +14,10 @@ import re
 import asyncio
 import functools
 import contextlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import formatdate
 from pathlib import Path as FilePath  # 1. 使用 FilePath 避免与 FastAPI 的 Path 冲突
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlencode, urlparse
 
 import httpx
@@ -111,7 +111,7 @@ except ImportError as e:
 
 # 5. 内部模块导入
 from ..core.config import API_V1_STR, MAX_FILE_SIZE, AUDIO_UPLOAD_DIR, AUDIO_OUTPUT_DIR
-from ..core.database import User, SessionLocal, InterviewRecord, InterviewReport
+from ..core.database import User, SessionLocal, InterviewRecord, InterviewReport, InterviewFocusEvent
 from ..services.audio_service import save_upload_audio, convert_webm_to_wav, get_backup_wav
 from ..services.interview_service import InterviewService
 
@@ -244,6 +244,78 @@ class ChatRequest(BaseModel):
 class ReportRequest(BaseModel):
     session_id: str = Field(..., description="会话唯一ID")
     token: Optional[str] = Field(None, description="从URL中获取的安全Token")
+
+class FocusEventRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=128)
+    event_id: str = Field(..., min_length=1, max_length=64)
+    reason: Literal["hidden", "blur"]
+    occurred_at: datetime
+
+def focus_monitoring_summary(db: Session, user_id: int, session_id: str) -> dict:
+    events = db.query(InterviewFocusEvent).filter(
+        InterviewFocusEvent.user_id == user_id,
+        InterviewFocusEvent.session_id == session_id
+    ).order_by(InterviewFocusEvent.occurred_at.asc(), InterviewFocusEvent.id.asc()).all()
+    return {
+        "leave_count": len(events),
+        "events": [
+            {
+                "reason": event.reason,
+                "occurred_at": event.client_occurred_at.isoformat() + "Z",
+                "received_at": event.occurred_at.isoformat() + "Z"
+            }
+            for event in events
+        ]
+    }
+
+@router.get("/focus_events")
+async def get_focus_events(
+    session_id: str = Query(..., min_length=1, max_length=128),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    return focus_monitoring_summary(db, int(current_user["sub"]), session_id)
+
+@router.post("/focus_events")
+async def record_focus_event(
+    req: FocusEventRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = int(current_user["sub"])
+    if req.occurred_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="occurred_at 必须包含时区")
+    db.add(InterviewFocusEvent(
+        user_id=user_id,
+        session_id=req.session_id,
+        event_id=req.event_id,
+        reason=req.reason,
+        client_occurred_at=req.occurred_at.astimezone(timezone.utc).replace(tzinfo=None)
+    ))
+    try:
+        db.commit()
+    except IntegrityError:
+        # 网络重试携带同一个 event_id，不应重复计数。
+        db.rollback()
+        duplicate = db.query(InterviewFocusEvent.id).filter(
+            InterviewFocusEvent.user_id == user_id,
+            InterviewFocusEvent.session_id == req.session_id,
+            InterviewFocusEvent.event_id == req.event_id
+        ).first()
+        if not duplicate:
+            raise
+
+    summary = focus_monitoring_summary(db, user_id, req.session_id)
+    report = db.query(InterviewReport).filter(
+        InterviewReport.user_id == user_id,
+        InterviewReport.session_id == req.session_id
+    ).order_by(InterviewReport.generated_at.desc()).first()
+    if report:
+        content = json.loads(report.report_content)
+        content["focus_monitoring"] = summary
+        report.report_content = json.dumps(content, ensure_ascii=False)
+        db.commit()
+    return summary
 
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=12, description="用户名，仅支持英文和数字，2-12位")
@@ -734,6 +806,11 @@ async def get_report(
         ).order_by(InterviewReport.generated_at.desc()).first()
         if existing_report:
             cached_result = json.loads(existing_report.report_content)
+            focus_monitoring = focus_monitoring_summary(db, user_id, req.session_id)
+            if cached_result.get("focus_monitoring") != focus_monitoring:
+                cached_result["focus_monitoring"] = focus_monitoring
+                existing_report.report_content = json.dumps(cached_result, ensure_ascii=False)
+                db.commit()
             cached_result["record_id"] = existing_report.id
             cached_result["job_id"] = existing_report.job_id
             return cached_result
@@ -771,6 +848,7 @@ async def get_report(
                 result["duration"] = 0
 
             result["job_id"] = real_job_id
+            result["focus_monitoring"] = focus_monitoring_summary(db, user_id, req.session_id)
             report_str = json.dumps(result, ensure_ascii=False)
 
             # 提取真实评分写入 score 列
@@ -791,6 +869,13 @@ async def get_report(
             db.add(new_report)
             db.commit()
             db.refresh(new_report)  # 👈 必须刷新才能拿到数据库自增的 id (即 record_id)
+
+            # 报告生成期间可能恰好收到离屏事件；落库后再核对一次，避免返回旧汇总。
+            latest_focus_monitoring = focus_monitoring_summary(db, user_id, req.session_id)
+            if result["focus_monitoring"] != latest_focus_monitoring:
+                result["focus_monitoring"] = latest_focus_monitoring
+                new_report.report_content = json.dumps(result, ensure_ascii=False)
+                db.commit()
 
             # 4. 把刚刚生成的 record_id 塞进返回结果中给前端
             if isinstance(result, dict):

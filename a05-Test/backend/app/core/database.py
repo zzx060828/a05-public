@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON, Float
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, JSON, Float, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -63,6 +63,19 @@ class InterviewReport(Base):
     score=Column(Integer, nullable=True)
     report_content = Column(Text, nullable=False)  # 报告内容（Markdown格式）
     generated_at = Column(DateTime, default=datetime.datetime.utcnow)  # 生成时间
+
+class InterviewFocusEvent(Base):
+    __tablename__ = "interview_focus_events"
+    __table_args__ = (UniqueConstraint("user_id", "session_id", "event_id", name="uq_interview_focus_event"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    session_id = Column(String(128), nullable=False, index=True)
+    event_id = Column(String(64), nullable=False)
+    reason = Column(String(16), nullable=False)
+    client_occurred_at = Column(DateTime, nullable=False)
+    occurred_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
 class JobPosition(Base):
     __tablename__ = "job_positions"
 
